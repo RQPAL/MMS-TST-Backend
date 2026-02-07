@@ -1,0 +1,17 @@
+{
+  "name": "mms-tst-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.11.5",
+    "dotenv": "^16.4.5",
+    "jsonwebtoken": "^9.0.2",
+    "bcrypt": "^5.1.1",
+    "node-cron": "^3.0.3"
+  }
+}
