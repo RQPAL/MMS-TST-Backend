@@ -1,8 +1,13 @@
 import { pool } from "../db/pool.js";
 import { validate as isUUID } from "uuid";
+import { successResponse, errorResponse } from "../utils/response.js";
+import { logAudit } from "../utils/audit.js";
 
-// deklarasi membuat data client baru
-export const createClient = async (req, res) => {
+/**
+ * CREATE CLIENT
+ * POST /clients
+ */
+export const createClient = async (req, res, next) => {
   try {
     const {
       id_penawaran_custom,
@@ -18,14 +23,16 @@ export const createClient = async (req, res) => {
       social_media
     } = req.body;
 
-    // 1️⃣ validasi minimal
+    // 1️⃣ VALIDASI MINIMAL
     if (!id_penawaran_custom || !company_name) {
-      return res.status(400).json({
-        message: "id_penawaran_custom dan company_name wajib diisi"
-      });
+      return errorResponse(
+        res,
+        "id_penawaran_custom dan company_name wajib diisi",
+        400
+      );
     }
 
-    // 2️⃣ insert ke database
+    // 2️⃣ INSERT KE DATABASE
     const result = await pool.query(
       `
       INSERT INTO clients (
@@ -47,42 +54,48 @@ export const createClient = async (req, res) => {
       [
         id_penawaran_custom,
         company_name,
-        industry_type,
-        province,
-        city,
-        district,
-        village,
-        street,
-        pic_name,
-        phone,
-        social_media
+        industry_type ?? null,
+        province ?? null,
+        city ?? null,
+        district ?? null,
+        village ?? null,
+        street ?? null,
+        pic_name ?? null,
+        phone ?? null,
+        social_media ?? null
       ]
     );
 
-    // 3️⃣ response sukses
-    res.status(201).json({
-      message: "Client berhasil dibuat",
-      data: result.rows[0]
+    const createdClient = result.rows[0];
+
+    // AUDIT (E5)
+    await logAudit({
+      user_id: req.user.id,
+      action: "CREATE",
+      entity: "clients",
+      entity_id: createdClient.id,
+      payload: createdClient,
+      req
     });
+
+    // 3️⃣ RESPONSE SUKSES
+    return successResponse(
+      res,
+      "Client berhasil dibuat",
+      result.rows[0],
+      201
+    );
 
   } catch (error) {
-    console.error(error);
-
-    // 4️⃣ handle duplicate id_penawaran_custom
-    if (error.code === "23505") {
-      return res.status(409).json({
-        message: "ID Penawaran sudah digunakan"
-      });
-    }
-
-    res.status(500).json({
-      message: "Internal server error"
-    });
+    next(error);
   }
 };
 
-//deklarasi ambil data client dari database
-export const getClients = async (req, res) => {
+/**
+ * GET CLIENTS (WITH FILTER & PAGINATION)
+ * GET /clients
+ */
+export const getClients = async (req, res, next) => {
   try {
     const {
       search,
@@ -93,33 +106,37 @@ export const getClients = async (req, res) => {
       limit = 10
     } = req.query;
 
-    const offset = (Number(page) - 1) * Number(limit);
+    const pageNum = Number(page);
+    const limitNum = Number(limit);
+    const offset = (pageNum - 1) * limitNum;
 
-    const conditions = [];
+    const conditions = ["deleted_at IS NULL"];
     const values = [];
 
+    // 🔍 FILTERS
     if (search) {
       values.push(`%${search}%`);
       conditions.push(`company_name ILIKE $${values.length}`);
     }
+
     if (province) {
       values.push(province);
       conditions.push(`province = $${values.length}`);
     }
+
     if (city) {
       values.push(city);
       conditions.push(`city = $${values.length}`);
     }
+
     if (industry) {
       values.push(industry);
       conditions.push(`industry_type = $${values.length}`);
     }
 
-    const whereClause = conditions.length
-      ? `WHERE ${conditions.join(" AND ")}`
-      : "";
+    const whereClause = `WHERE ${conditions.join(" AND ")}`;
 
-    // query data
+    // QUERY DATA
     const dataQuery = `
       SELECT *
       FROM clients
@@ -129,42 +146,52 @@ export const getClients = async (req, res) => {
       OFFSET $${values.length + 2}
     `;
 
-    // query total (untuk pagination)
+    // QUERY TOTAL
     const countQuery = `
       SELECT COUNT(*)::int AS total
       FROM clients
       ${whereClause}
     `;
 
-    const dataValues = [...values, Number(limit), offset];
-    const countValues = [...values];
+    const dataValues = [...values, limitNum, offset];
 
     const [dataResult, countResult] = await Promise.all([
       pool.query(dataQuery, dataValues),
-      pool.query(countQuery, countValues),
+      pool.query(countQuery, values),
     ]);
 
-    res.json({
-      page: Number(page),
-      limit: Number(limit),
-      total: countResult.rows[0].total,
-      data: dataResult.rows,
-    });
+    // RESPONSE
+    return successResponse(
+      res,
+      "Data clients berhasil diambil",
+      {
+        page: pageNum,
+        limit: limitNum,
+        total: countResult.rows[0].total,
+        data: dataResult.rows
+      }
+    );
+
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Internal server error" });
+    next(error);
   }
 };
 
-//deklarasi merubah data client
-export const updateClient = async (req, res) => {
+/**
+ * UPDATE CLIENT
+ * PUT /clients/:id
+ */
+export const updateClient = async (req, res, next) => {
   try {
     const { id } = req.params;
 
+    // 1️⃣ VALIDASI UUID
     if (!isUUID(id)) {
-      return res.status(400).json({
-        message: "Invalid client id"
-      });
+      return errorResponse(
+        res,
+        "Invalid client id",
+        400
+      );
     }
 
     const allowedFields = [
@@ -183,6 +210,7 @@ export const updateClient = async (req, res) => {
     const updates = [];
     const values = [];
 
+    // 2️⃣ BUILD DYNAMIC UPDATE
     allowedFields.forEach((field) => {
       if (req.body[field] !== undefined) {
         values.push(req.body[field]);
@@ -191,38 +219,57 @@ export const updateClient = async (req, res) => {
     });
 
     if (updates.length === 0) {
-      return res.status(400).json({
-        message: "Tidak ada field yang diupdate"
-      });
+      return errorResponse(
+        res,
+        "Tidak ada field yang diupdate",
+        400
+      );
     }
 
     values.push(id);
 
     const query = `
       UPDATE clients
-      SET ${updates.join(", ")}, updated_at = NOW()
+      SET ${updates.join(", ")},
+          updated_at = NOW()
       WHERE id = $${values.length}
+        AND deleted_at IS NULL
       RETURNING *
     `;
 
     const result = await pool.query(query, values);
 
     if (result.rowCount === 0) {
-      return res.status(404).json({
-        message: "Client tidak ditemukan"
-      });
+      return errorResponse(
+        res,
+        "Client tidak ditemukan",
+        404
+      );
     }
 
-    res.json({
-      message: "Client berhasil diupdate",
-      data: result.rows[0]
+    const updatedClient = result.rows[0];
+
+    // AUDIT (E5)
+    await logAudit({
+      user_id: req.user.id,
+      action: "UPDATE",
+      entity: "clients",
+      entity_id: updatedClient.id,
+      payload: {
+      updated_fields: req.body
+      },
+      req
     });
 
+    // 3️⃣ RESPONSE SUKSES
+    return successResponse(
+      res,
+      "Client berhasil diupdate",
+      result.rows[0],
+      200
+    );
+    
   } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      message: "Internal server error"
-    });
+    next(error);
   }
 };
-
